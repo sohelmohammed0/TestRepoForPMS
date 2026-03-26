@@ -1,0 +1,10 @@
+{
+  "name": "testrepoforpms",
+  "version": "1.0.0",
+  "description": "Test app — verifies SSM parameter injection at container startup",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {}
+}

@@ -1,0 +1,134 @@
+name: Build and Deploy to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [dev, test, prod]
+      team_name:
+        description: "Team name"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 412128478995.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: testrepoforpms
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Validate team name ───────────────────────
+      - name: Validate team name
+        run: |
+          if [ "${{ github.event.inputs.team_name }}" != "BillBox" ]; then
+            echo "❌ Invalid team name. Only 'BillBox' is permitted."
+            exit 1
+          fi
+
+      # ── Install AWS CLI v2 ───────────────────────
+      - name: Install AWS CLI v2
+        run: |
+          if aws --version 2>/dev/null | grep -q "aws-cli/2"; then
+            echo "AWS CLI v2 already present."
+          else
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp/
+            sudo /tmp/aws/install --update
+            rm -rf /tmp/awscliv2.zip /tmp/aws
+          fi
+          aws --version
+
+      # ── Authenticate to AWS via OIDC ─────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::412128478995:role/TestForPMS
+          aws-region: us-east-1
+
+      # ── Login to ECR ─────────────────────────────
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Build & push Docker image ─────────────────
+      - name: Build and push image to ECR
+        id: build
+        run: |
+          IMAGE_TAG="${{ github.event.inputs.environment }}-${{ github.sha }}"
+          FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          LATEST_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.environment }}-latest"
+
+          echo "🔨 Building image: $FULL_IMAGE"
+
+          docker build -t "$FULL_IMAGE" -t "$LATEST_IMAGE" .
+
+          echo "📤 Pushing to ECR..."
+          docker push "$FULL_IMAGE"
+          docker push "$LATEST_IMAGE"
+
+          echo "image=$FULL_IMAGE" >> $GITHUB_OUTPUT
+          echo "latest=$LATEST_IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ Image pushed: $FULL_IMAGE"
+
+      # ── SSH into EC2 and redeploy ─────────────────
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            TEAM_NAME="${{ github.event.inputs.team_name }}"
+            APP_ENV="${{ github.event.inputs.environment }}"
+            IMAGE="${{ steps.build.outputs.latest }}"
+            CONTAINER_NAME="pms-app"
+            REGION="us-east-1"
+            REGISTRY="412128478995.dkr.ecr.us-east-1.amazonaws.com"
+
+            echo "🔐 Logging in to ECR..."
+            aws ecr get-login-password --region $REGION \
+              | docker login --username AWS --password-stdin $REGISTRY
+
+            echo "📥 Pulling latest image: $IMAGE"
+            docker pull "$IMAGE"
+
+            echo "🛑 Stopping existing container (if running)..."
+            docker stop "$CONTAINER_NAME" 2>/dev/null || true
+            docker rm   "$CONTAINER_NAME" 2>/dev/null || true
+
+            echo "🚀 Starting new container..."
+            docker run -d \
+              --name "$CONTAINER_NAME" \
+              --restart unless-stopped \
+              -p 3000:3000 \
+              -e TEAM_NAME="$TEAM_NAME" \
+              -e APP_ENV="$APP_ENV" \
+              "$IMAGE"
+
+            echo "⏳ Waiting for container to start..."
+            sleep 5
+
+            echo "🏥 Health check..."
+            curl -sf http://localhost:3000/health && echo "✅ App is healthy" || echo "⚠️ Health check failed — check docker logs $CONTAINER_NAME"
+
+            echo ""
+            echo "──────────────────────────────"
+            echo "✅ Deployed: $IMAGE"
+            echo "   Team:     $TEAM_NAME"
+            echo "   Env:      $APP_ENV"
+            echo "──────────────────────────────"
