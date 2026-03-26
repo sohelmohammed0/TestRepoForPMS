@@ -34,7 +34,7 @@ jobs:
       - name: Validate team name
         run: |
           if [ "${{ github.event.inputs.team_name }}" != "BillBox" ]; then
-            echo "❌ Invalid team name. Only 'BillBox' is permitted."
+            echo "Invalid team name. Only 'BillBox' is permitted."
             exit 1
           fi
 
@@ -57,6 +57,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::412128478995:role/TestForPMS
           aws-region: us-east-1
+          audience: sts.amazonaws.com  # ← ADDED
 
       # ── Login to ECR ─────────────────────────────
       - name: Login to Amazon ECR
@@ -71,17 +72,17 @@ jobs:
           FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           LATEST_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.environment }}-latest"
 
-          echo "🔨 Building image: $FULL_IMAGE"
+          echo "Building image: $FULL_IMAGE"
 
           docker build -t "$FULL_IMAGE" -t "$LATEST_IMAGE" .
 
-          echo "📤 Pushing to ECR..."
+          echo "Pushing to ECR..."
           docker push "$FULL_IMAGE"
           docker push "$LATEST_IMAGE"
 
           echo "image=$FULL_IMAGE" >> $GITHUB_OUTPUT
           echo "latest=$LATEST_IMAGE" >> $GITHUB_OUTPUT
-          echo "✅ Image pushed: $FULL_IMAGE"
+          echo "Image pushed: $FULL_IMAGE"
 
       # ── SSH into EC2 and redeploy ─────────────────
       - name: Deploy to EC2
@@ -100,18 +101,18 @@ jobs:
             REGION="us-east-1"
             REGISTRY="412128478995.dkr.ecr.us-east-1.amazonaws.com"
 
-            echo "🔐 Logging in to ECR..."
+            echo "Logging in to ECR..."
             aws ecr get-login-password --region $REGION \
               | docker login --username AWS --password-stdin $REGISTRY
 
-            echo "📥 Pulling latest image: $IMAGE"
+            echo "Pulling latest image: $IMAGE"
             docker pull "$IMAGE"
 
-            echo "🛑 Stopping existing container (if running)..."
+            echo "Stopping existing container (if running)..."
             docker stop "$CONTAINER_NAME" 2>/dev/null || true
             docker rm   "$CONTAINER_NAME" 2>/dev/null || true
 
-            echo "🚀 Starting new container..."
+            echo "Starting new container..."
             docker run -d \
               --name "$CONTAINER_NAME" \
               --restart unless-stopped \
@@ -120,15 +121,15 @@ jobs:
               -e APP_ENV="$APP_ENV" \
               "$IMAGE"
 
-            echo "⏳ Waiting for container to start..."
+            echo "Waiting for container to start..."
             sleep 5
 
-            echo "🏥 Health check..."
-            curl -sf http://localhost:3000/health && echo "✅ App is healthy" || echo "⚠️ Health check failed — check docker logs $CONTAINER_NAME"
+            echo "Health check..."
+            curl -sf http://localhost:3000/health && echo "App is healthy" || echo "Health check failed — check docker logs $CONTAINER_NAME"
 
             echo ""
             echo "──────────────────────────────"
-            echo "✅ Deployed: $IMAGE"
+            echo "Deployed: $IMAGE"
             echo "   Team:     $TEAM_NAME"
             echo "   Env:      $APP_ENV"
             echo "──────────────────────────────"
