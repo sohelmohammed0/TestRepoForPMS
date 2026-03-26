@@ -7,7 +7,7 @@ on:
         description: "Target environment"
         required: true
         type: choice
-        options: [dev, test, prod]
+        options: [dev, test, prod, feature]
       team_name:
         description: "Team name"
         required: true
