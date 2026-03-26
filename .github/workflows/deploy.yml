@@ -1,5 +1,17 @@
 name: Build and Deploy to EC2
 
+# ============================================================
+# Required GitHub Secrets:
+#   AWS_ROLE_ARN          — arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME
+#   AWS_REGION            — e.g. us-east-1
+#   ECR_REGISTRY          — e.g. 412128478995.dkr.ecr.us-east-1.amazonaws.com
+#   ECR_REPOSITORY        — e.g. testrepoforpms
+#   ALLOWED_TEAM_NAME     — e.g. BillBox
+#   EC2_HOST              — EC2 public IP or DNS
+#   EC2_USER              — e.g. ubuntu
+#   EC2_SSH_KEY           — private key contents
+# ============================================================
+
 on:
   workflow_dispatch:
     inputs:
@@ -97,9 +109,11 @@ jobs:
             APP_ENV="${{ github.event.inputs.environment }}"
             IMAGE="${{ steps.build.outputs.latest }}"
             CONTAINER_NAME="${{ env.CONTAINER_NAME }}"
+            NEW_CONTAINER="${{ env.CONTAINER_NAME }}-new"
             REGION="${{ secrets.AWS_REGION }}"
             REGISTRY="${{ secrets.ECR_REGISTRY }}"
             PORT="${{ env.CONTAINER_PORT }}"
+            NEW_PORT=$(( PORT + 1 ))
 
             echo "Logging in to ECR..."
             aws ecr get-login-password --region $REGION \
@@ -108,24 +122,54 @@ jobs:
             echo "Pulling latest image: $IMAGE"
             docker pull "$IMAGE"
 
-            echo "Stopping existing container (if running)..."
-            docker stop "$CONTAINER_NAME" 2>/dev/null || true
-            docker rm   "$CONTAINER_NAME" 2>/dev/null || true
+            echo "Starting new container on port $NEW_PORT..."
+            docker stop "$NEW_CONTAINER" 2>/dev/null || true
+            docker rm   "$NEW_CONTAINER" 2>/dev/null || true
 
-            echo "Starting new container..."
             docker run -d \
-              --name "$CONTAINER_NAME" \
+              --name "$NEW_CONTAINER" \
               --restart unless-stopped \
-              -p "$PORT:$PORT" \
+              -p "$NEW_PORT:$PORT" \
               -e TEAM_NAME="$TEAM_NAME" \
               -e APP_ENV="$APP_ENV" \
               "$IMAGE"
 
-            echo "Waiting for container to start..."
+            echo "Waiting for new container to be ready..."
             sleep 5
 
-            echo "Health check..."
-            curl -sf http://localhost:$PORT/health && echo "App is healthy" || echo "Health check failed — check docker logs $CONTAINER_NAME"
+            echo "Health check on new container..."
+            if curl -sf http://localhost:$NEW_PORT/health; then
+              echo "New container is healthy!"
+
+              echo "Stopping old container..."
+              docker stop "$CONTAINER_NAME" 2>/dev/null || true
+              docker rm   "$CONTAINER_NAME" 2>/dev/null || true
+
+              echo "Renaming new container to $CONTAINER_NAME..."
+              docker rename "$NEW_CONTAINER" "$CONTAINER_NAME"
+
+              echo "Updating port binding — restarting on correct port $PORT..."
+              docker stop "$CONTAINER_NAME"
+              docker rm   "$CONTAINER_NAME"
+
+              docker run -d \
+                --name "$CONTAINER_NAME" \
+                --restart unless-stopped \
+                -p "$PORT:$PORT" \
+                -e TEAM_NAME="$TEAM_NAME" \
+                -e APP_ENV="$APP_ENV" \
+                "$IMAGE"
+
+              sleep 3
+              curl -sf http://localhost:$PORT/health && echo "App is healthy on port $PORT" || echo "Health check failed — check docker logs $CONTAINER_NAME"
+
+            else
+              echo "New container health check FAILED — rolling back!"
+              docker stop "$NEW_CONTAINER" 2>/dev/null || true
+              docker rm   "$NEW_CONTAINER" 2>/dev/null || true
+              echo "Old container is still running. Deployment aborted."
+              exit 1
+            fi
 
             echo ""
             echo "──────────────────────────────"
