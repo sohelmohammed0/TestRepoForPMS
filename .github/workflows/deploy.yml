@@ -18,9 +18,8 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REGISTRY: 412128478995.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: testrepoforpms
+  CONTAINER_NAME: pms-app   # ← Update container name here if needed
+  CONTAINER_PORT: 3000       # ← Update container port here if needed
 
 jobs:
   build-and-deploy:
@@ -33,8 +32,8 @@ jobs:
       # ── Validate team name ───────────────────────
       - name: Validate team name
         run: |
-          if [ "${{ github.event.inputs.team_name }}" != "BillBox" ]; then
-            echo "Invalid team name. Only 'BillBox' is permitted."
+          if [ "${{ github.event.inputs.team_name }}" != "${{ secrets.ALLOWED_TEAM_NAME }}" ]; then
+            echo "Invalid team name. Only '${{ secrets.ALLOWED_TEAM_NAME }}' is permitted."
             exit 1
           fi
 
@@ -55,9 +54,9 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::412128478995:role/TestForPMS
-          aws-region: us-east-1
-          audience: sts.amazonaws.com  # ← ADDED
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          audience: sts.amazonaws.com
 
       # ── Login to ECR ─────────────────────────────
       - name: Login to Amazon ECR
@@ -69,8 +68,8 @@ jobs:
         id: build
         run: |
           IMAGE_TAG="${{ github.event.inputs.environment }}-${{ github.sha }}"
-          FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          LATEST_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:${{ github.event.inputs.environment }}-latest"
+          FULL_IMAGE="${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG"
+          LATEST_IMAGE="${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ github.event.inputs.environment }}-latest"
 
           echo "Building image: $FULL_IMAGE"
 
@@ -97,9 +96,10 @@ jobs:
             TEAM_NAME="${{ github.event.inputs.team_name }}"
             APP_ENV="${{ github.event.inputs.environment }}"
             IMAGE="${{ steps.build.outputs.latest }}"
-            CONTAINER_NAME="pms-app"
-            REGION="us-east-1"
-            REGISTRY="412128478995.dkr.ecr.us-east-1.amazonaws.com"
+            CONTAINER_NAME="${{ env.CONTAINER_NAME }}"
+            REGION="${{ secrets.AWS_REGION }}"
+            REGISTRY="${{ secrets.ECR_REGISTRY }}"
+            PORT="${{ env.CONTAINER_PORT }}"
 
             echo "Logging in to ECR..."
             aws ecr get-login-password --region $REGION \
@@ -116,7 +116,7 @@ jobs:
             docker run -d \
               --name "$CONTAINER_NAME" \
               --restart unless-stopped \
-              -p 3000:3000 \
+              -p "$PORT:$PORT" \
               -e TEAM_NAME="$TEAM_NAME" \
               -e APP_ENV="$APP_ENV" \
               "$IMAGE"
@@ -125,7 +125,7 @@ jobs:
             sleep 5
 
             echo "Health check..."
-            curl -sf http://localhost:3000/health && echo "App is healthy" || echo "Health check failed — check docker logs $CONTAINER_NAME"
+            curl -sf http://localhost:$PORT/health && echo "App is healthy" || echo "Health check failed — check docker logs $CONTAINER_NAME"
 
             echo ""
             echo "──────────────────────────────"
